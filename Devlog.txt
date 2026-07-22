@@ -1,1 +1,114 @@
+Initial Geiger Counter Development 
+Date: July 12, 2026
 
+The goal of today was to build and test an Arduino-based Geiger counter that can reliably measure ionizing radiation. This project is part of a larger interest in learning more about radiation and eventually using the detector to measure different types of materials and minerals. I ordered a Arduino Geiger counter module and I successfully assembled and connected to an Arduino Uno. I developed an Arduino program that records each pulse detected by the Geiger counter. The program displays the counts per minute (CPM) throughout the test while also running continuously for one hour. At the end of the hour, it reports the total counts collected during the test, allowing the results to be converted into counts per hour (CPH). 
+
+Experimental Plan
+To evaluate the operation of the detector, I will perform two initial trials.
+
+Trial 1 – Background Radiation
+Location: Indoors in a room.
+Procedure: Place the Geiger counter in a fixed position and allow it to record radiation for one hour.
+Purpose: Establish the normal background radiation level.
+
+Trial 2 – Background Radiation with Known Radioactive Sources
+Location: Same room and exact same position as Trial 1.
+Procedure: Place a household smoke detector and a banana beside the Geiger counter and record radiation for one hour.
+Purpose: Determine whether the detector records a measurable increase in radiation compared to the background reading.
+Expected Results
+
+I expect the first trial to provide a stable background radiation measurement. The second trial may produce a slightly higher count rate due to the naturally occurring radioactive materials present in the smoke detector and the potassium-40 naturally found in bananas. Because these sources emit only very low levels of radiation, any increase may be small and could require multiple trials to confirm. But when confirmed I can then proceed to making it purely detect mounts.
+
+
+Dual Geiger Counter Assembly Preparation 
+Date: July 19, 2026
+
+The previous phase of testing was successful. The Geiger counter consistently measured background radiation over one-hour trials, producing stable counts per hour across repeated tests. This confirmed that the detector and Arduino program were operating reliably and provided confidence to continue developing the project.
+
+To move the project toward detecting cosmic ray muons, I ordered two additional components from Amazon. These included a second Geiger counter module, and an SD card module for onboard data logging. The second Geiger counter will allow me to detect simultaneous radiation events, while the SD card module will enable long-duration experiments without needing to keep the Arduino connected to a computer.
+
+To accurately position the detectors, I designed a custom mounting bracket in Tinkercad and printed it using my 3D printer. The holder aligns the two Geiger counters directly above one another with a fixed separation distance of about 6cm (this is just a number I chose with no logic behind the decision). Maintaining this alignment is important because a cosmic ray muon should pass through both detectors in a straight line.
+
+The successful background radiation testing, arrival of the new hardware, and completion of the custom detector mount represent an important milestone. The project is now ready to be assembled into a dual-detector system capable of searching for muon coincidence events.
+
+
+Successful Construction of the Muon Detector 
+Date: July 20, 2026
+
+Today I assembled the complete dual-detector system. The second Geiger counter was wired to the Arduino Uno alongside the original detector, with each detector connected to its own interrupt pin to ensure that every radiation pulse could be recorded reliably. I also connected the SD card module using the SPI interface so that experimental data could be stored directly onto a microSD card for later analysis.
+
+After completing the wiring, I developed new Arduino software to control the entire system. The program continuously monitors both Geiger counters and records data once every second. Each row of data contains the elapsed time, the number of counts detected by each Geiger counter during that second, and whether both detectors recorded at least one event during the same one-second interval. The software also automatically creates a new CSV file every time the Arduino starts, preventing previous experimental data from being overwritten and making it easier to organize multiple trials.
+
+Following several rounds of testing and debugging, the system successfully detected radiation from both Geiger counters while simultaneously writing the results to the SD card. The data could then be opened as a spreadsheet for analysis. This confirmed that the electronics, wiring, and software were all functioning correctly.
+
+With these milestones completed, I have successfully built a working prototype muon detector. Although future improvements will include more precise timing to distinguish true coincidence events from random background radiation, the current system is capable of collecting synchronized data from two Geiger counters and provides the foundation for detecting cosmic ray muons.
+
+
+Muon Density Measurement Concept and Detector Construction
+Date: July 21, 2026
+
+After successfully creating a working dual Geiger counter system, I began expanding the purpose of the project from simply detecting radiation into using cosmic ray muons as a method of measuring the density of materials. The idea is based on the fact that muons are high-energy particles that constantly pass through Earth from cosmic rays. When muons travel through denser materials, some are absorbed or scattered, meaning that the number of muons detected after passing through an object can provide information about the object's density.
+
+The goal of this experiment is to test whether my detector can identify differences in the number of muons passing through different amounts of material. Instead of using an expensive industrial detector, I am attempting to create a low-cost prototype using two Geiger counters, an Arduino, and custom hardware.
+
+For the first test object, I found a random concrete block/brick that I found in my backyard. The purpose of this first experiment is not to determine the exact density of the concrete, but to test whether the detector can measure a noticeable difference between an empty path and a path containing a dense object.
+
+The experimental procedure will consist of two trials:
+
+Trial 1 – Empty Space Calibration
+Position the two Geiger counters directly above one another.
+Leave the space between the detectors empty.
+Run the detector continuously for 24 hours.
+Record the number of assumed mouns events where both Geiger counters detect a particle.
+
+This trial will establish the baseline muon detection rate without any material blocking the particles.
+
+Trial 2 – Concrete Block Test
+Place the same concrete block between the two Geiger counters.
+Keep the detector position, orientation, and measurement time identical.
+Run the detector for another 24 hours.
+Compare the number of assumed mouns events to Trial 1.
+
+If the concrete absorbs or scatters some muons, the number of detected assumed mouns should decrease compared to the empty-space measurement.
+
+
+Muon Detector Mechanical Design, Wiring, and Software Development
+Date: July 22, 2026
+
+Today I focused on transforming the dual Geiger counter system into a complete muon detector capable of performing long-duration experiments. The main goals were designing the physical structure, completing the wiring, and developing the software required for autonomous operation.
+
+CAD Design and 3D Printing
+
+To ensure accurate measurements, I created a custom detector mounting structure using Tinkercad. The purpose of the design was to hold the two Geiger counters perfectly aligned vertically above one another. This positioning is important because a muon passing through both detectors should travel through the same path, allowing the system to identify assumed mouns events.
+
+The 3D-printed structure creates a fixed distance between the detectors and prevents movement during the 24-hour experiments. This improves the reliability of comparisons between the empty-space trial and the concrete-block trial.
+
+Electrical Wiring
+
+The electronics were assembled around an Arduino Uno. The two Geiger counters were connected separately so each detector could be monitored independently.
+
+The wiring included:
+
+Detector 1 signal connected to Arduino interrupt pin D2.
+Detector 2 signal connected to Arduino interrupt pin D3.
+SD card module connected through the Arduino SPI communication pins.
+LCD display connected in 4-bit mode to provide real-time experiment information.
+A start button added so experiments do not begin immediately when power is applied.
+
+The use of interrupts allows the Arduino to record radiation pulses accurately without missing events while performing other tasks such as updating the display and writing data to the SD card.
+
+Software Development
+
+I developed a new version of the Arduino program designed specifically for 24-hour experiments. The software now includes:
+
+Automatic experiment starting through a physical button.
+Real-time LCD status display.
+A 24-hour countdown/progress indicator.
+Recording of detector counts every second.
+Detection of coincidence events when both Geiger counters record radiation during the same measurement period.
+SD card data logging in CSV format for later spreadsheet analysis.
+Automatic creation of new data files so previous experiments are not overwritten.
+
+After testing the wiring and code, the system successfully operated as a standalone dual-detector radiation measurement device. This marks the completion of the first prototype version of my muon detector.
+
+The next step is to run the two 24-hour experiments: one with empty space between the detectors and one with the concrete block placed between them. By comparing the coincidence rates from both trials, I will determine whether this low-cost detector can measure differences caused by material density.
