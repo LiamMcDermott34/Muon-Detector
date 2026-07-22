@@ -20,6 +20,7 @@ Expected Results
 I expect the first trial to provide a stable background radiation measurement. The second trial may produce a slightly higher count rate due to the naturally occurring radioactive materials present in the smoke detector and the potassium-40 naturally found in bananas. Because these sources emit only very low levels of radiation, any increase may be small and could require multiple trials to confirm. But when confirmed I can then proceed to making it purely detect mounts.
 
 
+
 Dual Geiger Counter Assembly Preparation 
 Date: July 19, 2026
 
@@ -32,6 +33,7 @@ To accurately position the detectors, I designed a custom mounting bracket in Ti
 The successful background radiation testing, arrival of the new hardware, and completion of the custom detector mount represent an important milestone. The project is now ready to be assembled into a dual-detector system capable of searching for muon coincidence events.
 
 
+
 Successful Construction of the Muon Detector 
 Date: July 20, 2026
 
@@ -42,6 +44,7 @@ After completing the wiring, I developed new Arduino software to control the ent
 Following several rounds of testing and debugging, the system successfully detected radiation from both Geiger counters while simultaneously writing the results to the SD card. The data could then be opened as a spreadsheet for analysis. This confirmed that the electronics, wiring, and software were all functioning correctly.
 
 With these milestones completed, I have successfully built a working prototype muon detector. Although future improvements will include more precise timing to distinguish true coincidence events from random background radiation, the current system is capable of collecting synchronized data from two Geiger counters and provides the foundation for detecting cosmic ray muons.
+
 
 
 Muon Density Measurement Concept and Detector Construction
@@ -70,6 +73,7 @@ Run the detector for another 24 hours.
 Compare the number of assumed mouns events to Trial 1.
 
 If the concrete absorbs or scatters some muons, the number of detected assumed mouns should decrease compared to the empty-space measurement.
+
 
 
 Muon Detector Mechanical Design, Wiring, and Software Development
