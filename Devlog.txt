@@ -116,3 +116,21 @@ Automatic creation of new data files so previous experiments are not overwritten
 After testing the wiring and code, the system successfully operated as a standalone dual-detector radiation measurement device. This marks the completion of the first prototype version of my muon detector.
 
 The next step is to run the two 24-hour experiments: one with empty space between the detectors and one with the concrete block placed between them. By comparing the coincidence rates from both trials, I will determine whether this low-cost detector can measure differences caused by material density.
+
+
+
+FAILURE: TIME TO MAKE SOME CHANGES
+Date: July 25, 2026
+
+Over the past two days, I ran my muon detector twice. The first trial was on July 22 from 8:00 a.m. to 10:00 p.m., with a 4-inch concrete block between the two Geiger counters. This yielded 65 assumed muons. The second trial was on July 23 from 8:00 a.m. to 10:00 p.m., with 4 inches of air between the two Geiger counters. This yielded 44 assumed muons.
+
+This is definitely not the outcome I was looking for. I was hoping the results would be the reverse. So why did this happen?
+
+Muons are random. Muons do not arrive at a constant rate. A muon will not hit the same spot every x minutes. This can be overcome by running trials over much longer periods of time, but that would take far too long to be practical for this project.
+Concrete is slightly radioactive. Because of this, the concrete naturally produces more clicks, increasing the chances of detecting false "muons."
+Four inches of concrete isn't enough. It's simply too thin to noticeably reduce the number of muons. If I wanted to see a significant difference in muon detections, I would likely need several meters of concrete, which just isn't realistic for this project.
+So, What's Next?
+
+I still want to focus on muon detection, but I'm going to shift the project toward studying muons over a much longer period of time.
+
+I plan to build a detector that can stay plugged in and collect data continuously for months. It will record the exact time of each detected muon, along with atmospheric pressure. I will then compare this data with publicly available information, such as my city's daily temperature and humidity, as well as solar flare activity on the days the data was collected. By analyzing the data over an extended period, I hope to identify any patterns or relationships between muon detection rates and environmental conditions.
