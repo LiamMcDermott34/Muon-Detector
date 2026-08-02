@@ -1,357 +1,312 @@
-Here is the fully combined, unified script for your ESP32 muon detector. It incorporates everything:
-
-* **Freenove I2C LCD** (configured for 20x4, can be easily changed to 16x2 on line 12 if needed)
-* **Wi-Fi & NTP Time Sync** (automatically grabs the precise clock at startup without needing a broken physical RTC module)
-* **MicroSD Card Logging** (saves data with accurate timestamps, elapsed time, detector counts, and coincidences to `/DATA00.CSV` with auto-incrementing file names)
-* **Precise Geiger Counter Interrupts** (uses `IRAM_ATTR` and a $50\mu s$ coincidence window on GPIO 34 and 35)
-* **Start Button & State Machine** (waits for a button press on GPIO 27 to initialize the run)
-
-```cpp
-#include <WiFi.h>
-#include <time.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
+#include "RTClib.h"
 #include <LiquidCrystal_I2C.h>
 
-// --- Wi-Fi Credentials (Change to your network) ---
-const char* ssid     = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+// ==========================================
+// PIN DEFINITIONS
+// ==========================================
+#define PIN_G1_SIG      34
+#define PIN_G2_SIG      35
+#define PIN_START_BTN   27
+#define PIN_SD_CS       5
+// I2C: SDA=21, SCL=22 (Default ESP32 hardware I2C)
+// SPI: MOSI=23, MISO=19, SCK=18 (Default ESP32 VSPI)
 
-// --- NTP Server Settings ---
-const char* ntpServer1 = "pool.ntp.org";
-const char* ntpServer2 = "time.nist.gov";
-const long  gmtOffset_sec = -18000;   // Adjust for your timezone (e.g., -18000 for EST)
-const int   daylightOffset_sec = 3600; // Adjust for daylight saving time (0 if none)
+// ==========================================
+// SETTINGS
+// ==========================================
+// Max time (in microseconds) between tube pulses to count as a muon coincidence.
+// DIY Geiger circuits have some latency; 1000us (1ms) is a safe starting point.
+const unsigned long COINCIDENCE_WINDOW_US = 1000; 
 
-// --- Pin Definitions (ESP32) ---
-const int geiger1Pin = 34;   // Input-only pin
-const int geiger2Pin = 35;   // Input-only pin
-const int buttonPin = 27;    // Start button (active low with internal pull-up)
-const int sdCSPin = 5;       // SD Card Chip Select
+// ==========================================
+// OBJECTS
+// ==========================================
+RTC_DS3231 rtc;
+LiquidCrystal_I2C lcd(0x27, 20, 4); // Address 0x27 is common, change to 0x3F if it doesn't work
 
-// --- LCD Initialization (Freenove I2C 20x4 - change to 16, 2 if using a 16x2) ---
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+// ==========================================
+// VOLATILE VARIABLES FOR INTERRUPTS
+// ==========================================
+// Interval counters (reset every 5 mins)
+volatile unsigned long int_d1_counts = 0;
+volatile unsigned long int_d2_counts = 0;
+volatile unsigned long int_muon_counts = 0;
 
-// --- State Management ---
-enum State { WAITING, INIT, RUNNING, FINISHED };
-State currentState = WAITING;
+// Daily counters (reset at midnight)
+volatile unsigned long daily_d1_counts = 0;
+volatile unsigned long daily_d2_counts = 0;
+volatile unsigned long daily_muon_counts = 0;
 
-// --- Timing Variables ---
-unsigned long startTime = 0;
-unsigned long lastScreenUpdate = 0;
-unsigned long lastLogTime = 0;
-const unsigned long experimentDuration = 86400000UL; // 24 hours in milliseconds
-const unsigned long screenCycleTime = 3000;          // 3 seconds per screen
-const unsigned long logInterval = 60000;             // Log to SD every 60 seconds
-int currentScreen = 0;
+// Timestamps for coincidence detection
+volatile unsigned long last_g1_micros = 0;
+volatile unsigned long last_g2_micros = 0;
+volatile unsigned long last_muon_micros = 0;
 
-// --- Geiger Counter & Coincidence Variables (Volatile for ISR) ---
-volatile unsigned long counts1 = 0;
-volatile unsigned long counts2 = 0;
-volatile unsigned long coincidences = 0;
+// ==========================================
+// GLOBAL STATE VARIABLES
+// ==========================================
+bool isWaitingForSync = true;
+int currentDay = -1;
+unsigned long lastLcdUpdate = 0;
+int lcdScreenState = 0; // 0 = Interval data, 1 = Daily data
 
-volatile unsigned long lastPulse1 = 0;
-volatile unsigned long lastPulse2 = 0;
-const unsigned long coincidenceWindow = 50; // Microseconds window for a coincidence
+// ==========================================
+// INTERRUPT SERVICE ROUTINES (ISR)
+// ==========================================
+void IRAM_ATTR isr_G1() {
+  unsigned long now_us = micros();
+  int_d1_counts++;
+  daily_d1_counts++;
+  
+  // Check for coincidence
+  if (now_us - last_g2_micros <= COINCIDENCE_WINDOW_US) {
+    if (now_us - last_muon_micros > COINCIDENCE_WINDOW_US) { // Prevent double counting
+      int_muon_counts++;
+      daily_muon_counts++;
+      last_muon_micros = now_us;
+    }
+  }
+  last_g1_micros = now_us;
+}
 
-// --- SD Card Variables ---
-char filename[] = "/DATA00.CSV";
+void IRAM_ATTR isr_G2() {
+  unsigned long now_us = micros();
+  int_d2_counts++;
+  daily_d2_counts++;
+  
+  // Check for coincidence
+  if (now_us - last_g1_micros <= COINCIDENCE_WINDOW_US) {
+    if (now_us - last_muon_micros > COINCIDENCE_WINDOW_US) {
+      int_muon_counts++;
+      daily_muon_counts++;
+      last_muon_micros = now_us;
+    }
+  }
+  last_g2_micros = now_us;
+}
 
-// --- FreeRTOS Mutex for Thread Safety ---
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
-// --- Function Prototypes ---
-void IRAM_ATTR isrGeiger1();
-void IRAM_ATTR isrGeiger2();
-void drawHomeScreen();
-void waitForStartButton();
-void initExperiment();
-void runExperiment();
-void updateDisplay(unsigned long elapsedTime);
-void logToSD(unsigned long elapsedTime);
-void finishExperiment();
-
+// ==========================================
+// SETUP
+// ==========================================
 void setup() {
   Serial.begin(115200);
-  
-  // Initialize I2C and LCD
   Wire.begin(21, 22);
+
+  // Init LCD
   lcd.init();
   lcd.backlight();
-  
-  lcd.clear();
-  lcd.print("Connecting WiFi...");
-
-  // Connect to Wi-Fi to sync time via NTP
-  WiFi.begin(ssid, password);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-    if (attempts > 40) { // Timeout after 20 seconds
-      Serial.println("\nWiFi Failed! Proceeding with internal timer.");
-      break;
-    }
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi Connected!");
-    lcd.clear();
-    lcd.print("Syncing Time...");
-    
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2);
-    
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      Serial.println("Time synced via NTP!");
-      lcd.clear();
-      lcd.print("Time Synced!");
-      delay(1200);
-    }
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-  }
-
-  // Initialize Pins
-  pinMode(buttonPin, INPUT_PULLUP);
-  pinMode(geiger1Pin, INPUT);
-  pinMode(geiger2Pin, INPUT);
-  pinMode(sdCSPin, OUTPUT);
-
-  // Attach Interrupts for Geiger Counters
-  attachInterrupt(digitalPinToInterrupt(geiger1Pin), isrGeiger1, FALLING);
-  attachInterrupt(digitalPinToInterrupt(geiger2Pin), isrGeiger2, FALLING);
-
-  drawHomeScreen();
-}
-
-void loop() {
-  switch (currentState) {
-    case WAITING:
-      waitForStartButton();
-      break;
-      
-    case INIT:
-      initExperiment();
-      break;
-      
-    case RUNNING:
-      runExperiment();
-      break;
-      
-    case FINISHED:
-      finishExperiment();
-      break;
-  }
-}
-
-// --- Interrupt Service Routines ---
-void IRAM_ATTR isrGeiger1() {
-  unsigned long now = micros();
-  counts1++;
-  if (now - lastPulse2 <= coincidenceWindow) {
-    coincidences++;
-  }
-  lastPulse1 = now;
-}
-
-void IRAM_ATTR isrGeiger2() {
-  unsigned long now = micros();
-  counts2++;
-  if (now - lastPulse1 <= coincidenceWindow) {
-    coincidences++;
-  }
-  lastPulse2 = now;
-}
-
-// --- Functions ---
-
-void drawHomeScreen() {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("   MUON DETECTOR    ");
+  lcd.print("Muon Detector Boot");
+
+  // Init Start Button
+  pinMode(PIN_START_BTN, INPUT_PULLUP);
+
+  // 1. Check RTC
+  lcd.setCursor(0, 1);
+  if (!rtc.begin()) {
+    lcd.print("RTC: FAILED! Halt.");
+    while (1);
+  }
+  lcd.print("RTC: OK");
+  
+  if (rtc.lostPower()) {
+    // If battery died, set to compile time
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  // 2. Check SD Card
   lcd.setCursor(0, 2);
-  lcd.print("  Press START Button ");
-}
-
-void waitForStartButton() {
-  if (digitalRead(buttonPin) == LOW) {
-    delay(50); // Debounce
-    if (digitalRead(buttonPin) == LOW) {
-      currentState = INIT;
-    }
+  if (!SD.begin(PIN_SD_CS)) {
+    lcd.print("SD Card: FAILED! Hlt");
+    while (1);
   }
-}
+  lcd.print("SD Card: OK");
 
-void initExperiment() {
+  delay(2000);
+  lcd.clear();
+
+  // 3. Wait for START Button
+  lcd.setCursor(0, 0);
+  lcd.print("System Ready.");
+  lcd.setCursor(0, 2);
+  lcd.print("Press START Button");
+  lcd.setCursor(0, 3);
+  lcd.print("to begin detection..");
+
+  while (digitalRead(PIN_START_BTN) == HIGH) {
+    delay(50); // Wait for button press (LOW)
+  }
+
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Initializing...");
-  lcd.setCursor(0, 1);
-  lcd.print("Please Wait");
-  
-  // Initialize SD Card (Explicitly setting SPI pins: SCK=18, MISO=19, MOSI=23, SS=5)
-  SPI.begin(18, 19, 23, sdCSPin);
-  if (!SD.begin(sdCSPin)) {
-    lcd.clear();
-    lcd.print("SD Init Failed!");
-    while (1); 
-  }
-
-  // Find next available file name (/DATA00.CSV to /DATA99.CSV)
-  for (uint8_t i = 0; i < 100; i++) {
-    filename[5] = i / 10 + '0';
-    filename[6] = i % 10 + '0';
-    if (!SD.exists(filename)) {
-      File dataFile = SD.open(filename, FILE_WRITE);
-      if (dataFile) {
-        dataFile.println("Date,Time,Elapsed(ms),D1_Counts,D2_Counts,Coincidences");
-        dataFile.close();
-      }
-      break;
-    }
-  }
-
-  // Reset variables
-  counts1 = 0;
-  counts2 = 0;
-  coincidences = 0;
-  startTime = millis();
-  lastScreenUpdate = millis();
-  lastLogTime = millis();
-  
-  currentState = RUNNING;
-}
-
-void runExperiment() {
-  unsigned long currentTime = millis();
-  unsigned long elapsedTime = currentTime - startTime;
-
-  if (elapsedTime >= experimentDuration) {
-    logToSD(elapsedTime);
-    currentState = FINISHED;
-    return;
-  }
-
-  if (currentTime - lastScreenUpdate >= screenCycleTime) {
-    lastScreenUpdate = currentTime;
-    currentScreen = (currentScreen + 1) % 4;
-    updateDisplay(elapsedTime);
-  }
-
-  if (currentTime - lastLogTime >= logInterval) {
-    lastLogTime = currentTime;
-    logToSD(elapsedTime);
-  }
-}
-
-void updateDisplay(unsigned long elapsedTime) {
+  lcd.print("Starting...");
+  delay(1000);
   lcd.clear();
-  
-  portENTER_CRITICAL(&mux);
-  unsigned long safeC1 = counts1;
-  unsigned long safeC2 = counts2;
-  unsigned long safeCoin = coincidences;
-  portEXIT_CRITICAL(&mux);
 
-  if (currentScreen == 0) {
-    // Screen 1: Timer
-    lcd.setCursor(0, 0);
-    lcd.print("Status: RUNNING");
-    lcd.setCursor(0, 1);
-    lcd.print("Elapsed Time:");
-    
-    unsigned long totalSeconds = elapsedTime / 1000;
-    unsigned long hours = totalSeconds / 3600;
-    unsigned long mins = (totalSeconds % 3600) / 60;
-    unsigned long secs = totalSeconds % 60;
-    
-    char timeStr[9];
-    sprintf(timeStr, "%02lu:%02lu:%02lu", hours, mins, secs);
-    lcd.setCursor(0, 2);
-    lcd.print(timeStr);
-    
-  } else if (currentScreen == 1) {
-    // Screen 2: Progress
-    lcd.setCursor(0, 0);
-    lcd.print("Experiment Progress");
-    
-    int percent = (int)((elapsedTime * 100) / experimentDuration);
-    int bars = (percent * 10) / 100; // 0 to 10 bars
-    
-    lcd.setCursor(0, 1);
-    lcd.print(percent);
-    lcd.print("% ");
-    
-    lcd.setCursor(0, 2);
-    for (int i = 0; i < bars; i++) {
-      lcd.print("#");
+  // 4. Attach Interrupts
+  pinMode(PIN_G1_SIG, INPUT_PULLUP); // Assuming standard open-collector/active-low Geiger output
+  pinMode(PIN_G2_SIG, INPUT_PULLUP);
+  // NOTE: If your Geiger outputs are active-high, change FALLING to RISING
+  attachInterrupt(digitalPinToInterrupt(PIN_G1_SIG), isr_G1, FALLING); 
+  attachInterrupt(digitalPinToInterrupt(PIN_G2_SIG), isr_G2, FALLING);
+
+  DateTime now = rtc.now();
+  currentDay = now.day();
+}
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+void loop() {
+  DateTime now = rtc.now();
+
+  // Handle midnight reset
+  if (now.day() != currentDay) {
+    noInterrupts();
+    daily_d1_counts = 0;
+    daily_d2_counts = 0;
+    daily_muon_counts = 0;
+    interrupts();
+    currentDay = now.day();
+  }
+
+  // State Machine Logic
+  if (isWaitingForSync) {
+    // Waiting for a time perfectly divisible by 5 (e.g. 12:00:00, 12:05:00)
+    if (now.minute() % 5 == 0 && now.second() == 0) {
+      // Time is aligned! Reset interval counters and start the run
+      noInterrupts();
+      int_d1_counts = 0;
+      int_d2_counts = 0;
+      int_muon_counts = 0;
+      interrupts();
+      
+      isWaitingForSync = false; 
+      delay(1000); // Wait 1 second so we don't double-trigger on the 0th second
     }
-    
-  } else if (currentScreen == 2) {
-    // Screen 3: Individual Counts
-    lcd.setCursor(0, 0);
-    lcd.print("Detector Counts");
-    lcd.setCursor(0, 1);
-    lcd.print("Detector 1: ");
-    lcd.print(safeC1);
-    lcd.setCursor(0, 2);
-    lcd.print("Detector 2: ");
-    lcd.print(safeC2);
-    
-  } else if (currentScreen == 3) {
-    // Screen 4: Coincidences / Muons
-    lcd.setCursor(0, 0);
-    lcd.print("Muon Detection");
-    lcd.setCursor(0, 1);
-    lcd.print("Coincidences:");
-    lcd.setCursor(0, 2);
-    lcd.print(safeCoin);
+  } 
+  else {
+    // We are currently actively recording a 5-minute block.
+    // Check if the 5 minutes are up
+    if (now.minute() % 5 == 0 && now.second() == 0) {
+      saveDataToSD(now);
+      
+      // Reset counters for the next 5 mins
+      noInterrupts();
+      int_d1_counts = 0;
+      int_d2_counts = 0;
+      int_muon_counts = 0;
+      interrupts();
+      
+      delay(1000); // Prevent double-triggering
+    }
+  }
+
+  // Update LCD every 2.5 seconds
+  if (millis() - lastLcdUpdate > 2500) {
+    updateLCD(now);
+    lastLcdUpdate = millis();
   }
 }
 
-void logToSD(unsigned long elapsedTime) {
-  portENTER_CRITICAL(&mux);
-  unsigned long safeC1 = counts1;
-  unsigned long safeC2 = counts2;
-  unsigned long safeCoin = coincidences;
-  portEXIT_CRITICAL(&mux);
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
 
-  struct tm timeinfo;
+void saveDataToSD(DateTime t) {
+  // Disable interrupts briefly to grab clean copy of counters
+  noInterrupts();
+  unsigned long d1 = int_d1_counts;
+  unsigned long d2 = int_d2_counts;
+  unsigned long muons = int_muon_counts;
+  interrupts();
+
+  // Create filename: YYYY-MM-DD.csv (ESP32 SD supports long names)
+  char filename[16];
+  snprintf(filename, sizeof(filename), "/%04d-%02d-%02d.csv", t.year(), t.month(), t.day());
+
+  // Check if file exists to determine if we need headers
+  bool fileExists = SD.exists(filename);
+  
   File dataFile = SD.open(filename, FILE_APPEND);
-  
   if (dataFile) {
-    if (getLocalTime(&timeinfo)) {
-      dataFile.printf("%04d/%02d/%02d,%02d:%02d:%02d,", 
-                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
-                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    } else {
-      dataFile.print("N/A,N/A,");
+    if (!fileExists) {
+      dataFile.println("Date,Time,D1_Counts,D2_Counts,Coincidences");
     }
-
-    dataFile.print(elapsedTime);
-    dataFile.print(",");
-    dataFile.print(safeC1);
-    dataFile.print(",");
-    dataFile.print(safeC2);
-    dataFile.print(",");
-    dataFile.println(safeCoin);
+    
+    // Format: YYYY-MM-DD,HH:MM:SS,D1,D2,Muons
+    char dataString[64];
+    snprintf(dataString, sizeof(dataString), "%04d-%02d-%02d,%02d:%02d:%02d,%lu,%lu,%lu", 
+             t.year(), t.month(), t.day(),
+             t.hour(), t.minute(), t.second(),
+             d1, d2, muons);
+             
+    dataFile.println(dataString);
     dataFile.close();
+    Serial.println(dataString);
+  } else {
+    Serial.println("Error opening file for writing!");
   }
 }
 
-void finishExperiment() {
+void updateLCD(DateTime t) {
+  // Grab safe copies of volatiles
+  noInterrupts();
+  unsigned long i_d1 = int_d1_counts;
+  unsigned long i_d2 = int_d2_counts;
+  unsigned long i_muons = int_muon_counts;
+  unsigned long d_d1 = daily_d1_counts;
+  unsigned long d_d2 = daily_d2_counts;
+  unsigned long d_muons = daily_muon_counts;
+  interrupts();
+
+  char timeStr[9];
+  snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", t.hour(), t.minute(), t.second());
+
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Experiment");
-  lcd.setCursor(0, 1);
-  lcd.print("Complete!");
-  
-  while (true) {
-    delay(1000);
+
+  if (isWaitingForSync) {
+    lcd.setCursor(0, 0);
+    lcd.print("Syncing Clock...");
+    lcd.setCursor(0, 1);
+    lcd.print("Time: "); lcd.print(timeStr);
+    lcd.setCursor(0, 3);
+    lcd.print("Waiting for XX:05...");
+  } 
+  else {
+    // Cycle between Screen 0 (5-min interval) and Screen 1 (Daily stats)
+    if (lcdScreenState == 0) {
+      lcd.setCursor(0, 0);
+      lcd.print("--- 5 MIN DATA ---");
+      lcd.setCursor(0, 1);
+      lcd.print("Time: "); lcd.print(timeStr);
+      lcd.setCursor(0, 2);
+      lcd.print("G1: "); lcd.print(i_d1);
+      lcd.print(" G2: "); lcd.print(i_d2);
+      lcd.setCursor(0, 3);
+      lcd.print("MUONS DETECTED: "); lcd.print(i_muons);
+    } 
+    else {
+      char dateStr[11];
+      snprintf(dateStr, sizeof(dateStr), "%04d-%02d-%02d", t.year(), t.month(), t.day());
+      
+      lcd.setCursor(0, 0);
+      lcd.print("--- DAILY TOTAL ---");
+      lcd.setCursor(0, 1);
+      lcd.print("Date: "); lcd.print(dateStr);
+      lcd.setCursor(0, 2);
+      lcd.print("G1: "); lcd.print(d_d1);
+      lcd.setCursor(10, 2);
+      lcd.print("G2: "); lcd.print(d_d2);
+      lcd.setCursor(0, 3);
+      lcd.print("TOTAL MUONS: "); lcd.print(d_muons);
+    }
+    
+    // Toggle screen for next cycle
+    lcdScreenState = !lcdScreenState;
   }
 }
-
-```
